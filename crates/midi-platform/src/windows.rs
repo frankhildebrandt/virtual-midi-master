@@ -37,6 +37,7 @@ pub struct WindowsBackend {
     outputs: HashMap<EndpointId, MidiOutputConnection>,
     endpoints: Vec<EndpointInfo>,
     config: Config,
+    active_system_signature: Vec<(u8, String)>,
     queue_overflows: Arc<AtomicU64>,
 }
 
@@ -82,29 +83,18 @@ impl WindowsBackend {
             outputs: HashMap::new(),
             endpoints: Vec::new(),
             config: Config::default(),
+            active_system_signature: Vec::new(),
             queue_overflows: Arc::new(AtomicU64::new(0)),
         })
     }
 
-    fn physical_signature(&self) -> Result<Vec<(u8, String)>, PlatformError> {
-        let own_ports = self
-            .config
-            .virtual_devices
-            .iter()
-            .flat_map(|device| {
-                [
-                    format!("{} MIDI In", device.name),
-                    format!("{} MIDI Out", device.name),
-                ]
-            })
-            .collect::<std::collections::HashSet<_>>();
+    fn system_signature(&self) -> Result<Vec<(u8, String)>, PlatformError> {
         let input = MidiInput::new("Virtual MIDI Master hotplug discovery")
             .map_err(|error| PlatformError::Initialization(error.to_string()))?;
         let mut signature = input
             .ports()
             .iter()
             .filter_map(|port| input.port_name(port).ok().map(|name| (port.id(), name)))
-            .filter(|(_, name)| !own_ports.contains(name))
             .map(|(id, name)| (0, format!("physical:input:{id}|{name}")))
             .collect::<Vec<_>>();
         let output = MidiOutput::new("Virtual MIDI Master hotplug discovery")
@@ -114,14 +104,15 @@ impl WindowsBackend {
                 .ports()
                 .iter()
                 .filter_map(|port| output.port_name(port).ok().map(|name| (port.id(), name)))
-                .filter(|(_, name)| !own_ports.contains(name))
                 .map(|(id, name)| (1, format!("physical:output:{id}|{name}"))),
         );
+        signature.sort();
         Ok(signature)
     }
 
     fn connected_physical_signature(&self) -> Vec<(u8, String)> {
-        self.endpoints
+        let mut signature = self
+            .endpoints
             .iter()
             .filter(|endpoint| endpoint.kind == EndpointKind::Physical)
             .map(|endpoint| {
@@ -130,10 +121,55 @@ impl WindowsBackend {
                     format!("{}|{}", endpoint.id, endpoint.name),
                 )
             })
-            .collect()
+            .collect::<Vec<_>>();
+        signature.sort();
+        signature
     }
 
-    fn connect_physical(&mut self) -> Result<(), PlatformError> {
+    fn rebuilt_signature_is_complete(
+        &self,
+        mut observed: Vec<(u8, String)>,
+        config: &Config,
+    ) -> bool {
+        for connected in self.connected_physical_signature() {
+            let Some(index) = observed
+                .iter()
+                .position(|candidate| candidate == &connected)
+            else {
+                return false;
+            };
+            observed.swap_remove(index);
+        }
+        let pair_count = config
+            .virtual_devices
+            .iter()
+            .filter(|device| device.enabled)
+            .count();
+        observed
+            .iter()
+            .filter(|(direction, _)| *direction == 0)
+            .count()
+            == pair_count
+            && observed
+                .iter()
+                .filter(|(direction, _)| *direction == 1)
+                .count()
+                == pair_count
+    }
+
+    fn upsert_endpoint(&mut self, endpoint: EndpointInfo) {
+        if let Some(existing) = self
+            .endpoints
+            .iter_mut()
+            .find(|existing| existing.id == endpoint.id)
+        {
+            *existing = endpoint;
+        } else {
+            self.endpoints.push(endpoint);
+        }
+    }
+
+    fn connect_physical(&mut self, offline_only: bool) -> Result<(), PlatformError> {
         let input_probe = MidiInput::new("Virtual MIDI Master discovery")
             .map_err(|error| PlatformError::Initialization(error.to_string()))?;
         let input_names = input_probe
@@ -151,10 +187,26 @@ impl WindowsBackend {
                 .map_err(|error| PlatformError::Initialization(error.to_string()))?;
             input.ignore(Ignore::None);
             let ports = input.ports();
+            let id = EndpointId::new(format!("physical:input:{port_id}"));
+            if offline_only
+                && !self
+                    .endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.id == id && !endpoint.online)
+            {
+                continue;
+            }
+            let mut endpoint = EndpointInfo {
+                id: id.clone(),
+                name: name.clone(),
+                direction: EndpointDirection::Source,
+                kind: EndpointKind::Physical,
+                online: false,
+            };
             let Some(port) = ports.iter().find(|port| port.id() == port_id) else {
+                self.upsert_endpoint(endpoint);
                 continue;
             };
-            let id = EndpointId::new(format!("physical:input:{port_id}"));
             let callback_id = id.clone();
             let sender = self.incoming_tx.clone();
             let queue_overflows = self.queue_overflows.clone();
@@ -176,14 +228,9 @@ impl WindowsBackend {
                 (),
             ) {
                 self.input_connections.push(connection);
-                self.endpoints.push(EndpointInfo {
-                    id,
-                    name,
-                    direction: EndpointDirection::Source,
-                    kind: EndpointKind::Physical,
-                    online: true,
-                });
+                endpoint.online = true;
             }
+            self.upsert_endpoint(endpoint);
         }
 
         let output_probe = MidiOutput::new("Virtual MIDI Master discovery")
@@ -202,20 +249,31 @@ impl WindowsBackend {
             let output = MidiOutput::new("Virtual MIDI Master output")
                 .map_err(|error| PlatformError::Initialization(error.to_string()))?;
             let ports = output.ports();
+            let id = EndpointId::new(format!("physical:output:{port_id}"));
+            if offline_only
+                && !self
+                    .endpoints
+                    .iter()
+                    .any(|endpoint| endpoint.id == id && !endpoint.online)
+            {
+                continue;
+            }
+            let mut endpoint = EndpointInfo {
+                id: id.clone(),
+                name: name.clone(),
+                direction: EndpointDirection::Target,
+                kind: EndpointKind::Physical,
+                online: false,
+            };
             let Some(port) = ports.iter().find(|port| port.id() == port_id) else {
+                self.upsert_endpoint(endpoint);
                 continue;
             };
-            let id = EndpointId::new(format!("physical:output:{port_id}"));
             if let Ok(connection) = output.connect(port, "Virtual MIDI Master output") {
                 self.outputs.insert(id.clone(), connection);
-                self.endpoints.push(EndpointInfo {
-                    id,
-                    name,
-                    direction: EndpointDirection::Target,
-                    kind: EndpointKind::Physical,
-                    online: true,
-                });
+                endpoint.online = true;
             }
+            self.upsert_endpoint(endpoint);
         }
         Ok(())
     }
@@ -267,16 +325,41 @@ impl WindowsBackend {
         Ok(())
     }
 
-    fn rebuild(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
+    fn rebuild_once(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
         unsafe { vmm_windows_midi_destroy_virtual_devices() };
         self.contexts.clear();
         self.input_connections.clear();
         self.outputs.clear();
         self.endpoints.clear();
-        self.connect_physical()?;
+        self.active_system_signature.clear();
+        let expected_physical_signature = self.system_signature()?;
+        self.connect_physical(false)?;
+        if self.connected_physical_signature() != expected_physical_signature {
+            return Err(PlatformError::Endpoint(
+                "MIDI topology changed while physical ports were connected; retrying".into(),
+            ));
+        }
         self.create_virtual(config)?;
         self.config = config.clone();
+        let active_system_signature = self.system_signature()?;
+        if !self.rebuilt_signature_is_complete(active_system_signature.clone(), config) {
+            return Err(PlatformError::Endpoint(
+                "MIDI topology changed while virtual ports were created; retrying".into(),
+            ));
+        }
+        self.active_system_signature = active_system_signature;
         Ok(self.endpoints.clone())
+    }
+
+    fn rebuild(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
+        let mut last_error = None;
+        for _ in 0..3 {
+            match self.rebuild_once(config) {
+                Ok(endpoints) => return Ok(endpoints),
+                Err(error) => last_error = Some(error),
+            }
+        }
+        Err(last_error.expect("the rebuild loop always runs at least once"))
     }
 }
 
@@ -288,7 +371,11 @@ impl Drop for WindowsBackend {
 
 impl MidiBackend for WindowsBackend {
     fn reconfigure(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
-        if !self.endpoints.is_empty() && self.config.virtual_devices == config.virtual_devices {
+        if !self.endpoints.is_empty()
+            && !self.active_system_signature.is_empty()
+            && self.config.virtual_devices == config.virtual_devices
+            && self.system_signature()? == self.active_system_signature
+        {
             self.config = config.clone();
             return Ok(self.endpoints.clone());
         }
@@ -296,7 +383,23 @@ impl MidiBackend for WindowsBackend {
     }
 
     fn refresh(&mut self) -> Result<Option<Vec<EndpointInfo>>, PlatformError> {
-        if self.physical_signature()? == self.connected_physical_signature() {
+        if self.system_signature()? == self.active_system_signature {
+            let offline_before = self
+                .endpoints
+                .iter()
+                .filter(|endpoint| !endpoint.online)
+                .count();
+            if offline_before > 0 {
+                self.connect_physical(true)?;
+                let offline_after = self
+                    .endpoints
+                    .iter()
+                    .filter(|endpoint| !endpoint.online)
+                    .count();
+                if offline_after < offline_before {
+                    return Ok(Some(self.endpoints.clone()));
+                }
+            }
             return Ok(None);
         }
         let config = self.config.clone();

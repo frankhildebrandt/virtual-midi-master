@@ -37,6 +37,7 @@ export interface Config {
 }
 export interface MonitorEvent {
   event: { source: string; timestamp_micros: number; data: number[] };
+  data_len: number;
   targets: number;
 }
 export interface EngineSnapshot {

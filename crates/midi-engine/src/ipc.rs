@@ -183,16 +183,24 @@ fn serve_windows(controller: EngineController) -> Result<()> {
         if handle.is_null() {
             return Err(anyhow!("accept Windows named-pipe connection failed"));
         }
-        let response = serde_json::from_slice::<IpcRequest>(&buffer[..length as usize])
-            .map(|request| dispatch(&controller, request))
-            .unwrap_or_else(|error| IpcResponse::Error {
-                message: format!("invalid IPC request: {error}"),
+        let controller = controller.clone();
+        let handle_address = handle as usize;
+        thread::spawn(move || {
+            let response = serde_json::from_slice::<IpcRequest>(&buffer[..length as usize])
+                .map(|request| dispatch(&controller, request))
+                .unwrap_or_else(|error| IpcResponse::Error {
+                    message: format!("invalid IPC request: {error}"),
+                });
+            let mut encoded = serde_json::to_vec(&response).unwrap_or_else(|error| {
+                tracing::warn!(%error, "Windows named-pipe response encoding failed");
+                br#"{"type":"error","message":"response encoding failed"}"#.to_vec()
             });
-        let mut encoded = serde_json::to_vec(&response)?;
-        encoded.push(b'\n');
-        if unsafe { vmm_ipc_reply(handle, encoded.as_ptr(), encoded.len() as u32) } == 0 {
-            tracing::warn!("Windows named-pipe reply failed");
-        }
+            encoded.push(b'\n');
+            let handle = handle_address as *mut c_void;
+            if unsafe { vmm_ipc_reply(handle, encoded.as_ptr(), encoded.len() as u32) } == 0 {
+                tracing::warn!("Windows named-pipe reply failed");
+            }
+        });
     }
 }
 

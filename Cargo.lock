@@ -3952,6 +3952,7 @@ dependencies = [
  "cc",
  "crossbeam-channel",
  "dirs",
+ "midir",
  "parking_lot",
  "serde",
  "serde_json",

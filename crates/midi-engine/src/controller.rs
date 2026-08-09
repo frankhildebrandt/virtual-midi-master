@@ -13,6 +13,8 @@ use virtual_midi_platform::{EndpointInfo, MidiBackend, PlatformStatus};
 use crate::{ConfigStore, set_autostart};
 
 const MONITOR_CAPACITY: usize = 100;
+const MONITOR_DATA_PREVIEW_BYTES: usize = 64;
+const SNAPSHOT_PUBLISH_INTERVAL: Duration = Duration::from_millis(50);
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EngineStats {
@@ -26,6 +28,7 @@ pub struct EngineStats {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MonitorEvent {
     pub event: MidiEvent,
+    pub data_len: usize,
     pub targets: usize,
 }
 
@@ -125,6 +128,10 @@ fn run_worker(
 ) {
     let heartbeat = tick(Duration::from_millis(1));
     let mut monitor = VecDeque::with_capacity(MONITOR_CAPACITY);
+    let mut stats = EngineStats::default();
+    let mut runtime_dirty = false;
+    let mut send_errors_since_publish = 0_u64;
+    let mut last_snapshot_publish = Instant::now();
     let mut last_refresh = Instant::now();
     loop {
         select! {
@@ -155,9 +162,8 @@ fn run_worker(
             recv(heartbeat) -> _ => {
                 let dropped = backend.take_queue_overflows();
                 if dropped > 0 {
-                    let mut current = snapshot.write();
-                    current.stats.queue_overflows += dropped;
-                    current.revision += 1;
+                    stats.queue_overflows += dropped;
+                    runtime_dirty = true;
                 }
                 if last_refresh.elapsed() >= Duration::from_secs(2) {
                     match backend.refresh() {
@@ -185,8 +191,14 @@ fn run_worker(
                 for _ in 0..1024 {
                     let Some(event) = backend.try_receive() else { break };
                     let started = Instant::now();
-                    let routed = router.process(event.clone());
-                    let mut send_errors = 0;
+                    let monitor_event = MidiEvent::new(
+                        event.source.clone(),
+                        event.timestamp_micros,
+                        event.data[..event.data.len().min(MONITOR_DATA_PREVIEW_BYTES)].to_vec(),
+                    );
+                    let data_len = event.data.len();
+                    let routed = router.process(event);
+                    let mut send_errors = 0_u64;
                     for output in &routed {
                         if backend.send(&output.target, &output.data).is_err() {
                             send_errors += 1;
@@ -195,22 +207,55 @@ fn run_worker(
                     if monitor.len() == MONITOR_CAPACITY {
                         monitor.pop_front();
                     }
-                    monitor.push_back(MonitorEvent { event, targets: routed.len() });
-                    let mut current = snapshot.write();
-                    current.stats.received += 1;
-                    current.stats.sent += routed.len() as u64 - send_errors;
-                    current.stats.send_errors += send_errors;
-                    current.stats.last_internal_latency_micros = started.elapsed().as_micros() as u64;
-                    current.monitor = monitor.iter().cloned().collect();
-                    current.revision += 1;
-                    if send_errors > 0 {
-                        append_log(&mut current, format!("{send_errors} MIDI-Nachricht(en) konnten nicht gesendet werden"));
-                    }
+                    monitor.push_back(MonitorEvent {
+                        event: monitor_event,
+                        data_len,
+                        targets: routed.len(),
+                    });
+                    stats.received += 1;
+                    stats.sent += (routed.len() as u64).saturating_sub(send_errors);
+                    stats.send_errors += send_errors;
+                    stats.last_internal_latency_micros = started.elapsed().as_micros() as u64;
+                    send_errors_since_publish += send_errors;
+                    runtime_dirty = true;
+                }
+                if runtime_dirty && last_snapshot_publish.elapsed() >= SNAPSHOT_PUBLISH_INTERVAL {
+                    publish_runtime_snapshot(
+                        &snapshot,
+                        &stats,
+                        &monitor,
+                        send_errors_since_publish,
+                    );
+                    runtime_dirty = false;
+                    send_errors_since_publish = 0;
+                    last_snapshot_publish = Instant::now();
                 }
             }
         }
     }
-    snapshot.write().running = false;
+    let mut current = snapshot.write();
+    current.stats = stats;
+    current.monitor = monitor.into_iter().collect();
+    current.running = false;
+    current.revision += 1;
+}
+
+fn publish_runtime_snapshot(
+    snapshot: &RwLock<EngineSnapshot>,
+    stats: &EngineStats,
+    monitor: &VecDeque<MonitorEvent>,
+    send_errors: u64,
+) {
+    let mut current = snapshot.write();
+    current.stats = stats.clone();
+    current.monitor = monitor.iter().cloned().collect();
+    current.revision += 1;
+    if send_errors > 0 {
+        append_log(
+            &mut current,
+            format!("{send_errors} MIDI-Nachricht(en) konnten nicht gesendet werden"),
+        );
+    }
 }
 
 fn append_log(snapshot: &mut EngineSnapshot, message: String) {

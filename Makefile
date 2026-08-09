@@ -16,9 +16,13 @@ NODE_MODULES_STAMP := $(DESKTOP_DIR)/node_modules/.package-lock.json
 ifneq ($(findstring windows,$(HOST_TRIPLE)),)
 CARGO_PLATFORM := powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/with-windows-midi-sdk.ps1 $(CARGO)
 TAURI := powershell.exe -NoProfile -ExecutionPolicy Bypass -File scripts/with-windows-midi-sdk.ps1 $(NPM) --prefix $(DESKTOP_DIR) run tauri --
+DEBUG_BUNDLE_ARGS := --bundles nsis
 else
 CARGO_PLATFORM := $(CARGO)
 TAURI := cd $(DESKTOP_DIR) && $(NPM) run tauri --
+ifneq ($(findstring apple-darwin,$(HOST_TRIPLE)),)
+DEBUG_BUNDLE_ARGS := --bundles app
+endif
 endif
 
 .PHONY: help setup setup-platform setup-macos setup-windows deps \
@@ -91,7 +95,7 @@ build-app: deps prepare-sidecar-release ## Baut das native Tauri-Release-Bundle 
 	$(TAURI) build
 
 build-app-debug: deps prepare-sidecar ## Baut native Tauri-Debug-Bundles für den aktuellen Host
-	$(TAURI) build --debug
+	$(TAURI) build --debug $(DEBUG_BUNDLE_ARGS)
 
 package: ## Erzeugt das installierbare Paket für das aktuelle Betriebssystem
 	@case "$(HOST_TRIPLE)" in \

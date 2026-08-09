@@ -39,7 +39,7 @@ extern "C" void *vmm_ipc_accept(uint8_t *buffer, uint32_t capacity,
       L"\\\\.\\pipe\\virtual-midi-master", PIPE_ACCESS_DUPLEX,
       PIPE_TYPE_MESSAGE | PIPE_READMODE_MESSAGE | PIPE_WAIT |
           PIPE_REJECT_REMOTE_CLIENTS,
-      1, 1024 * 1024, 1024 * 1024, 0,
+      PIPE_UNLIMITED_INSTANCES, 1024 * 1024, 1024 * 1024, 0,
       descriptor ? &attributes : nullptr);
   if (descriptor) LocalFree(descriptor);
   if (pipe == INVALID_HANDLE_VALUE) return nullptr;

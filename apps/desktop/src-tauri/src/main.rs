@@ -7,7 +7,16 @@ use tauri_plugin_shell::ShellExt;
 use virtual_midi_engine::{IpcRequest, IpcResponse, request as send_ipc};
 
 #[tauri::command]
-fn engine_request(app: tauri::AppHandle, request: IpcRequest) -> Result<IpcResponse, String> {
+async fn engine_request(app: tauri::AppHandle, request: IpcRequest) -> Result<IpcResponse, String> {
+    tauri::async_runtime::spawn_blocking(move || engine_request_blocking(app, request))
+        .await
+        .map_err(|error| format!("Engine-IPC-Worker ist abgestürzt: {error}"))?
+}
+
+fn engine_request_blocking(
+    app: tauri::AppHandle,
+    request: IpcRequest,
+) -> Result<IpcResponse, String> {
     if let Ok(response) = send_ipc(&request) {
         return Ok(response);
     }

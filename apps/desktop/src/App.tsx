@@ -45,8 +45,9 @@ export default function App() {
         if (!active) return;
         setState(current);
         while (active) {
-          current = await subscribe(current.revision);
-          if (active) setState(current);
+          const next = await subscribe(current.revision);
+          if (active && next.revision !== current.revision) setState(next);
+          current = next;
         }
       } catch (caught) {
         if (active) setError(caught instanceof Error ? caught.message : String(caught));
@@ -117,7 +118,7 @@ function VirtualDevices({ state, update }: ViewProps) {
     void update(config => config.virtual_devices.push({ id: crypto.randomUUID(), name: trimmed, enabled: true }));
     setName("");
   };
-  return <section className="panel"><PanelTitle title="Virtuelle MIDI-Geräte" subtitle="Jedes Gerät erhält einen MIDI-In- und MIDI-Out-Port"/>
+  return <section className="panel"><PanelTitle title="Virtuelle MIDI-Geräte" subtitle="DAW-Ausgang → MIDI In · MIDI Out → DAW-Eingang"/>
     <div className="add-row"><input value={name} onChange={event => setName(event.target.value)} onKeyDown={event => event.key === "Enter" && add()} placeholder="Name des neuen Portpaars"/><button className="primary" onClick={add}>Portpaar hinzufügen</button></div>
     <div className="cards">{state.config.virtual_devices.map(device => <div className="device-card" key={device.id}><div className="device-icon">◫</div><div className="grow"><input className="name-input" defaultValue={device.name} onBlur={event => { const next = event.target.value.trim(); if (next && next !== device.name) void update(config => { config.virtual_devices.find(item => item.id === device.id)!.name = next; }); }}/><small><code>{device.name} MIDI In</code> · <code>{device.name} MIDI Out</code></small></div><label className="switch"><input type="checkbox" checked={device.enabled} onChange={event => void update(config => { config.virtual_devices.find(item => item.id === device.id)!.enabled = event.target.checked; })}/><span/></label><button className="danger-text" onClick={() => void update(config => { config.virtual_devices = config.virtual_devices.filter(item => item.id !== device.id); config.routes = config.routes.filter(route => !route.source.includes(device.id) && !route.target.includes(device.id)); config.known_endpoints = config.known_endpoints.filter(endpoint => !endpoint.id.includes(device.id)); })}>Entfernen</button></div>)}</div>
   </section>;
@@ -131,7 +132,7 @@ function Routes({ state, update }: ViewProps) {
   const [source, setSource] = useState(""); const [target, setTarget] = useState("");
   useEffect(() => { if (!source && sources[0]) setSource(sources[0].id); if (!target && targets[0]) setTarget(targets[0].id); }, [state.endpoints]);
   const add = () => source && target && void update(config => config.routes.push({ id: crypto.randomUUID(), source, target, enabled: true, rules: [] }));
-  return <div className="stack"><section className="panel"><PanelTitle title="Neue Route" subtitle="Eine Quelle kann zu beliebig vielen Zielen geroutet werden"/><div className="route-builder"><EndpointSelect endpoints={sources} value={source} onChange={setSource}/><span className="arrow">→</span><EndpointSelect endpoints={targets} value={target} onChange={setTarget}/><button className="primary" onClick={add} disabled={!source || !target}>Verbinden</button></div></section>
+  return <div className="stack"><section className="panel"><PanelTitle title="Neue Route" subtitle="Keyboard/Quelle → MIDI Out → DAW · DAW → MIDI In → Zielgerät"/><div className="route-builder"><EndpointSelect endpoints={sources} value={source} onChange={setSource}/><span className="arrow">→</span><EndpointSelect endpoints={targets} value={target} onChange={setTarget}/><button className="primary" onClick={add} disabled={!source || !target}>Verbinden</button></div></section>
     {state.config.routes.map(route => <RouteEditor key={route.id} route={route} endpoints={state.endpoints} update={update}/>) }
     {state.config.routes.length === 0 && <div className="empty">Noch keine Route konfiguriert.</div>}
   </div>;
@@ -163,4 +164,4 @@ function EndpointSelect({ endpoints, value, onChange }: { endpoints: EndpointInf
 }
 function Stat({ label, value }: { label: string; value: string | number }) { return <div className="stat"><span>{label}</span><strong>{value}</strong></div>; }
 function PanelTitle({ title, subtitle }: { title: string; subtitle: string }) { return <div className="panel-title"><div><h2>{title}</h2><p>{subtitle}</p></div></div>; }
-function Monitor({ state }: { state: EngineSnapshot }) { const recent = useMemo(() => state.monitor.slice(-12).reverse(), [state.monitor]); return <section className="panel"><PanelTitle title="Live-Monitor" subtitle="Die letzten gerouteten Nachrichten; auf 100 Einträge begrenzt"/><div className="monitor"><div className="monitor-row heading"><span>Zeit</span><span>Quelle</span><span>Daten</span><span>Ziele</span></div>{recent.map((item, index) => <div className="monitor-row" key={`${item.event.timestamp_micros}-${index}`}><span>{item.event.timestamp_micros}</span><span title={item.event.source}>{item.event.source.split(":").slice(-1)}</span><code>{item.event.data.map(byte => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ")}</code><span>{item.targets}</span></div>)}{recent.length === 0 && <div className="empty compact">Noch keine MIDI-Nachrichten empfangen.</div>}</div></section>; }
+function Monitor({ state }: { state: EngineSnapshot }) { const recent = useMemo(() => state.monitor.slice(-12).reverse(), [state.monitor]); return <section className="panel"><PanelTitle title="Live-Monitor" subtitle="Die letzten gerouteten Nachrichten; große Nachrichten werden als Vorschau angezeigt"/><div className="monitor"><div className="monitor-row heading"><span>Zeit</span><span>Quelle</span><span>Daten</span><span>Ziele</span></div>{recent.map((item, index) => <div className="monitor-row" key={`${item.event.timestamp_micros}-${index}`}><span>{item.event.timestamp_micros}</span><span title={item.event.source}>{item.event.source.split(":").slice(-1)}</span><code>{item.event.data.map(byte => byte.toString(16).padStart(2, "0").toUpperCase()).join(" ")}{item.data_len > item.event.data.length ? ` … (${item.data_len} Bytes)` : ""}</code><span>{item.targets}</span></div>)}{recent.length === 0 && <div className="empty compact">Noch keine MIDI-Nachrichten empfangen.</div>}</div></section>; }
