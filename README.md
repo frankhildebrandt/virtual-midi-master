@@ -16,24 +16,26 @@ MIDI 2.0 authoring, LFOs, sequence recording, a node editor, Windows 10 and publ
 Requirements: Rust 1.85+, Node 20+, npm, and the platform build tools.
 
 ```sh
-cargo test --workspace
-# Optional acceptance soak (runs for ten minutes):
-cargo test -p virtual-midi-core --test performance routes_ten_thousand_events_per_second_for_ten_minutes -- --ignored --exact
-cd apps/desktop
-npm install
-npm run build
+make help
+make setup
+make dev
 ```
 
-For Tauri development, prepare the sidecar first:
+The Makefile is the central entry point for development, checks and packaging. Common commands are:
 
 ```sh
-cargo build -p virtual-midi-engine --bin virtual-midi-engine
-mkdir -p apps/desktop/src-tauri/bin
-cp target/debug/virtual-midi-engine apps/desktop/src-tauri/bin/virtual-midi-engine-aarch64-apple-darwin
-cd apps/desktop && npm run tauri dev
+make dev-ui           # React/Vite only
+make dev-engine       # Rust engine only
+make preview-ui       # preview the built UI
+make build            # engine and UI
+make build-app        # native release bundle for this host
+make check            # formatting, Clippy, tests and UI build
+make test-soak        # optional ten-minute acceptance soak
+make package          # universal macOS package or Windows x64 installer
 ```
 
-Use the actual Rust target triple in the sidecar filename. Packaging helpers are under `scripts/`.
+`make prepare-sidecar` determines the Rust host triple automatically. The platform packaging helpers remain available under `scripts/` and are exposed as `make package-macos` and `make package-windows`.
+On Windows, all Rust and Tauri development/build targets run through the pinned Windows MIDI Services SDK environment; `make setup-windows` can prepare it explicitly.
 
 ## Runtime files
 
