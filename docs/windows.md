@@ -5,7 +5,7 @@ Windows builds require Windows 11 24H2/25H2 with Windows MIDI Services enabled a
 The C++ build needs generated headers for:
 
 - `Microsoft.Windows.CppWinRT` (`3.0.260520.1` in the current official Microsoft sample)
-- `Windows.Devices.Midi2` (`0.99.44-devpreview.4` in that sample)
+- `Windows.Devices.Midi2` (`0.99.44-devpreview.4`, downloaded from Microsoft's official MIDI GitHub release)
 
 The versions above are intentionally explicit. Update them only together with a Windows smoke-test pass because Microsoft MIDI SDK RC builds have introduced ABI changes.
 

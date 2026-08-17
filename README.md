@@ -14,7 +14,7 @@ MIDI 2.0 authoring, LFOs, sequence recording, a node editor, Windows 10 and publ
 
 ## Develop
 
-Requirements: Rust 1.85+, Node 20+, npm, and the platform build tools.
+Requirements: Rust 1.88+, Node 20+, npm, and the platform build tools.
 
 ```sh
 make help
