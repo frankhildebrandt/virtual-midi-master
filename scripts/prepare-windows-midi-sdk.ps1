@@ -29,10 +29,8 @@ $MidiMetadata = Get-ChildItem $MidiPackage -Recurse -Filter "Windows.Devices.Mid
     Select-Object -First 1 -ExpandProperty FullName
 $CppWinRtTool = Get-ChildItem $CppWinRtPackage -Recurse -Filter "cppwinrt.exe" |
     Select-Object -First 1 -ExpandProperty FullName
-$CppWinRt = Get-ChildItem $CppWinRtPackage -Recurse -Filter "base.h" |
-    Select-Object -First 1 | ForEach-Object { Split-Path -Parent (Split-Path -Parent $_.FullName) }
 
-if (-not $MidiMetadata -or -not $CppWinRtTool -or -not $CppWinRt) {
+if (-not $MidiMetadata -or -not $CppWinRtTool) {
     throw "Windows MIDI SDK metadata or C++/WinRT tooling was not found"
 }
 
@@ -42,10 +40,11 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $Headers = Join-Path $Projection "winrt"
-if (-not (Test-Path (Join-Path $Headers "Windows.Devices.Midi2.h"))) {
+if (-not (Test-Path (Join-Path $Headers "Windows.Devices.Midi2.h")) -or
+    -not (Test-Path (Join-Path $Headers "base.h"))) {
     throw "Generated Windows MIDI SDK headers were not found"
 }
 
-$IncludePath = (@($Projection) + @($CppWinRt) | Select-Object -Unique) -join ";"
+$IncludePath = $Projection
 
 Write-Output $IncludePath
