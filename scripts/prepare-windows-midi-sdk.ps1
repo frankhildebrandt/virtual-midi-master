@@ -29,12 +29,15 @@ $MidiMetadata = Get-ChildItem $MidiPackage -Recurse -Filter "Windows.Devices.Mid
     Select-Object -First 1 -ExpandProperty FullName
 $CppWinRtTool = Get-ChildItem $CppWinRtPackage -Recurse -Filter "cppwinrt.exe" |
     Select-Object -First 1 -ExpandProperty FullName
+$WindowsMetadataRoot = Join-Path ${env:ProgramFiles(x86)} "Windows Kits\10\UnionMetadata"
+$WindowsMetadata = Get-ChildItem $WindowsMetadataRoot -Recurse -Filter "Windows.winmd" |
+    Select-Object -First 1 -ExpandProperty FullName
 
-if (-not $MidiMetadata -or -not $CppWinRtTool) {
-    throw "Windows MIDI SDK metadata or C++/WinRT tooling was not found"
+if (-not $MidiMetadata -or -not $CppWinRtTool -or -not $WindowsMetadata) {
+    throw "Windows MIDI SDK metadata, system metadata, or C++/WinRT tooling was not found"
 }
 
-& $CppWinRtTool -input $MidiMetadata -output $Projection
+& $CppWinRtTool -input $WindowsMetadata -input $MidiMetadata -output $Projection
 if ($LASTEXITCODE -ne 0) {
     throw "Generating Windows MIDI SDK C++ projections failed with exit code $LASTEXITCODE"
 }
