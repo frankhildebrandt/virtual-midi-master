@@ -5,6 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $Packages = Join-Path $Root ".packages"
 $MidiFeed = Join-Path $Packages "midi-feed"
+$Projection = Join-Path $Packages "midi-projection"
 $CppWinRtPackage = Join-Path $Packages "Microsoft.Windows.CppWinRT.3.0.260520.1"
 $MidiPackage = Join-Path $Packages "Windows.Devices.Midi2.0.99.44-devpreview.4"
 $MidiPackageVersion = "0.99.44-devpreview.4"
@@ -24,14 +25,27 @@ if ($LASTEXITCODE -ne 0) {
     throw "Installing Windows.Devices.Midi2 $MidiPackageVersion failed with exit code $LASTEXITCODE"
 }
 
-$Headers = Get-ChildItem $MidiPackage -Recurse -Filter "Windows.Devices.Midi2.h" |
-    ForEach-Object { Split-Path -Parent (Split-Path -Parent $_.FullName) }
+$MidiMetadata = Get-ChildItem $MidiPackage -Recurse -Filter "Windows.Devices.Midi2.winmd" |
+    Select-Object -First 1 -ExpandProperty FullName
+$CppWinRtTool = Get-ChildItem $CppWinRtPackage -Recurse -Filter "cppwinrt.exe" |
+    Select-Object -First 1 -ExpandProperty FullName
 $CppWinRt = Get-ChildItem $CppWinRtPackage -Recurse -Filter "base.h" |
-    ForEach-Object { Split-Path -Parent (Split-Path -Parent $_.FullName) }
-$IncludePath = (@($Headers) + @($CppWinRt) | Select-Object -Unique) -join ";"
+    Select-Object -First 1 | ForEach-Object { Split-Path -Parent (Split-Path -Parent $_.FullName) }
 
-if (-not $IncludePath) {
-    throw "Windows MIDI SDK headers were not found"
+if (-not $MidiMetadata -or -not $CppWinRtTool -or -not $CppWinRt) {
+    throw "Windows MIDI SDK metadata or C++/WinRT tooling was not found"
 }
+
+& $CppWinRtTool -input $MidiMetadata -output $Projection
+if ($LASTEXITCODE -ne 0) {
+    throw "Generating Windows MIDI SDK C++ projections failed with exit code $LASTEXITCODE"
+}
+
+$Headers = Join-Path $Projection "winrt"
+if (-not (Test-Path (Join-Path $Headers "Windows.Devices.Midi2.h"))) {
+    throw "Generated Windows MIDI SDK headers were not found"
+}
+
+$IncludePath = (@($Projection) + @($CppWinRt) | Select-Object -Unique) -join ";"
 
 Write-Output $IncludePath
