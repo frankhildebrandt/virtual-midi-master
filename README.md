@@ -8,6 +8,7 @@ Virtual MIDI Master is a Rust MIDI routing engine with a Tauri 2 configuration a
 - Windows 11 24H2/25H2 x64: Windows MIDI Services virtual-device transport through a narrow C++/WinRT bridge, with WinMM/WinRT MIDI 1.0 compatibility ports. Physical ports use the Windows `midir` backend.
 - Separate background engine, local user-only IPC, atomic versioned configuration, LaunchAgent/HKCU autostart, bounded live monitor and Tauri/React patchbay.
 - Filters for Pitch Bend, poly/channel aftertouch, Clock, System Realtime and SysEx; channel and CC mapping.
+- Ordered per-device MIDI effects, including Scale Helper and Sustain Helper with configurable harmony reset.
 
 MIDI 2.0 authoring, LFOs, sequence recording, a node editor, Windows 10 and public code-signing are intentionally outside this release.
 

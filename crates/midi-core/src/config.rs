@@ -54,6 +54,54 @@ pub struct VirtualDevice {
     pub name: String,
     #[serde(default = "enabled_by_default")]
     pub enabled: bool,
+    #[serde(default)]
+    pub effects: Vec<MidiEffect>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScaleType {
+    Major,
+    NaturalMinor,
+    HarmonicMinor,
+    MelodicMinor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SustainMode {
+    ChordGesture,
+    Dissonance,
+    Both,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DissonanceSensitivity {
+    Off,
+    Semitone,
+    Tritone,
+    Both,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum MidiEffect {
+    ScaleHelper {
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
+        root: u8,
+        scale: ScaleType,
+    },
+    SustainHelper {
+        #[serde(default = "enabled_by_default")]
+        enabled: bool,
+        mode: SustainMode,
+        min_sustain_notes: u8,
+        release_time_ms: u16,
+        dissonance: DissonanceSensitivity,
+        auto_sustain: bool,
+    },
 }
 
 fn enabled_by_default() -> bool {
@@ -148,6 +196,23 @@ impl Config {
             }
             if !device_names.insert(device.name.trim().to_lowercase()) {
                 return Err(ConfigError::DuplicateVirtualDeviceName(device.name.clone()));
+            }
+            for effect in &device.effects {
+                match effect {
+                    MidiEffect::ScaleHelper { root, .. } if *root > 11 => {
+                        return Err(ConfigError::InvalidMidiEffect(device.id));
+                    }
+                    MidiEffect::SustainHelper {
+                        min_sustain_notes,
+                        release_time_ms,
+                        ..
+                    } if !(1..=6).contains(min_sustain_notes)
+                        || !(5..=250).contains(release_time_ms) =>
+                    {
+                        return Err(ConfigError::InvalidMidiEffect(device.id));
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -253,6 +318,8 @@ pub enum ConfigError {
     DuplicateVirtualDevice(Uuid),
     #[error("duplicate virtual device name {0}")]
     DuplicateVirtualDeviceName(String),
+    #[error("virtual device {0} has invalid MIDI effect settings")]
+    InvalidMidiEffect(Uuid),
     #[error("duplicate route id {0}")]
     DuplicateRoute(Uuid),
     #[error("route {0} has an empty endpoint")]

@@ -31,6 +31,7 @@ fn main() -> Result<()> {
             id: uuid::Uuid::new_v4(),
             name: "Virtual MIDI Master".into(),
             enabled: true,
+            effects: Vec::new(),
         });
         store.save(&config)?;
     }

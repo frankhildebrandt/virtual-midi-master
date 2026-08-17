@@ -1,5 +1,7 @@
+use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::effects::EffectRack;
 use crate::{Config, ConfigError, EndpointId, MessageType, MidiEvent, RoutedEvent, TransformRule};
 
 #[derive(Clone, Debug)]
@@ -11,6 +13,7 @@ struct CompiledRoute {
 #[derive(Clone, Debug, Default)]
 pub struct Router {
     routes: HashMap<EndpointId, Vec<CompiledRoute>>,
+    effects: RefCell<EffectRack>,
 }
 
 impl Router {
@@ -26,10 +29,37 @@ impl Router {
                     rules: route.rules.clone(),
                 });
         }
-        Ok(Self { routes })
+        Ok(Self {
+            routes,
+            effects: RefCell::new(EffectRack::compile(config)),
+        })
     }
 
     pub fn process(&self, event: MidiEvent) -> Vec<RoutedEvent> {
+        let events = self.effects.borrow_mut().process(event);
+        events
+            .into_iter()
+            .flat_map(|event| self.route(event))
+            .collect()
+    }
+
+    pub fn poll_due(&self) -> Vec<RoutedEvent> {
+        let events = self.effects.borrow_mut().poll_due();
+        events
+            .into_iter()
+            .flat_map(|event| self.route(event))
+            .collect()
+    }
+
+    pub fn release_generated_sustain(&self) -> Vec<RoutedEvent> {
+        let events = self.effects.borrow_mut().release_generated_sustain();
+        events
+            .into_iter()
+            .flat_map(|event| self.route(event))
+            .collect()
+    }
+
+    fn route(&self, event: MidiEvent) -> Vec<RoutedEvent> {
         self.routes
             .get(&event.source)
             .into_iter()

@@ -9,7 +9,13 @@ export type MessageType =
   | "system_realtime"
   | "sys_ex";
 
-export interface VirtualDevice { id: string; name: string; enabled: boolean }
+export type ScaleType = "major" | "natural_minor" | "harmonic_minor" | "melodic_minor";
+export type SustainMode = "chord_gesture" | "dissonance" | "both";
+export type DissonanceSensitivity = "off" | "semitone" | "tritone" | "both";
+export type MidiEffect =
+  | { type: "scale_helper"; enabled: boolean; root: number; scale: ScaleType }
+  | { type: "sustain_helper"; enabled: boolean; mode: SustainMode; min_sustain_notes: number; release_time_ms: number; dissonance: DissonanceSensitivity; auto_sustain: boolean };
+export interface VirtualDevice { id: string; name: string; enabled: boolean; effects: MidiEffect[] }
 export interface EndpointInfo {
   id: EndpointId;
   name: string;

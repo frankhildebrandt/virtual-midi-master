@@ -197,6 +197,7 @@ fn failed_platform_reconfiguration_restores_previous_endpoints() {
         id: Uuid::new_v4(),
         name: "fail".into(),
         enabled: true,
+        effects: Vec::new(),
     });
 
     assert!(controller.apply_config(failing).is_err());

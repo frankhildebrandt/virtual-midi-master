@@ -23,6 +23,7 @@ fn routes_a_note_between_system_visible_virtual_ports() {
             id: device_id,
             name: device_name.clone(),
             enabled: true,
+            effects: Vec::new(),
         }],
         routes: vec![Route {
             id: Uuid::new_v4(),

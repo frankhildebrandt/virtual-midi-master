@@ -137,6 +137,17 @@ fn run_worker(
         select! {
             recv(commands) -> command => match command {
                 Ok(Command::Apply(next, response)) => {
+                    if next.virtual_devices != config.virtual_devices {
+                        for output in router.release_generated_sustain() {
+                            if backend.send(&output.target, &output.data).is_ok() {
+                                stats.sent += 1;
+                            } else {
+                                stats.send_errors += 1;
+                                send_errors_since_publish += 1;
+                            }
+                        }
+                        runtime_dirty = true;
+                    }
                     let result = apply_transaction(backend, &store, &config, &next)
                         .map(|(new_router, committed, endpoints)| {
                             router = new_router;
@@ -187,6 +198,19 @@ fn run_worker(
                         }
                     }
                     last_refresh = Instant::now();
+                }
+                let due = router.poll_due();
+                if !due.is_empty() {
+                    let mut send_errors = 0_u64;
+                    for output in &due {
+                        if backend.send(&output.target, &output.data).is_err() {
+                            send_errors += 1;
+                        }
+                    }
+                    stats.sent += (due.len() as u64).saturating_sub(send_errors);
+                    stats.send_errors += send_errors;
+                    send_errors_since_publish += send_errors;
+                    runtime_dirty = true;
                 }
                 for _ in 0..1024 {
                     let Some(event) = backend.try_receive() else { break };

@@ -131,6 +131,7 @@ mod tests {
                 id: uuid::Uuid::new_v4(),
                 name: "Main".into(),
                 enabled: true,
+                effects: Vec::new(),
             }],
             ..Config::default()
         };

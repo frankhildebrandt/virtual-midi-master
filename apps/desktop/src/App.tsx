@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { applyConfig, snapshot as loadSnapshot, subscribe } from "./api";
 import type {
-  Config, EndpointInfo, EngineSnapshot, MessageType, Route, TransformRule, VirtualDevice
+  Config, EndpointInfo, EngineSnapshot, MessageType, MidiEffect, Route, TransformRule, VirtualDevice
 } from "./types";
 
 type Page = "dashboard" | "devices" | "virtual" | "routes" | "settings";
@@ -115,13 +115,29 @@ function VirtualDevices({ state, update }: ViewProps) {
   const [name, setName] = useState("");
   const add = () => {
     const trimmed = name.trim(); if (!trimmed) return;
-    void update(config => config.virtual_devices.push({ id: crypto.randomUUID(), name: trimmed, enabled: true }));
+    void update(config => config.virtual_devices.push({ id: crypto.randomUUID(), name: trimmed, enabled: true, effects: [] }));
     setName("");
   };
-  return <section className="panel"><PanelTitle title="Virtuelle MIDI-Geräte" subtitle="DAW-Ausgang → MIDI In · MIDI Out → DAW-Eingang"/>
+  return <section className="panel"><PanelTitle title="Virtuelle MIDI-Geräte" subtitle="DAW-Ausgang → MIDI In · geladene Effekte → Routing · MIDI Out → DAW-Eingang"/>
     <div className="add-row"><input value={name} onChange={event => setName(event.target.value)} onKeyDown={event => event.key === "Enter" && add()} placeholder="Name des neuen Portpaars"/><button className="primary" onClick={add}>Portpaar hinzufügen</button></div>
-    <div className="cards">{state.config.virtual_devices.map(device => <div className="device-card" key={device.id}><div className="device-icon">◫</div><div className="grow"><input className="name-input" defaultValue={device.name} onBlur={event => { const next = event.target.value.trim(); if (next && next !== device.name) void update(config => { config.virtual_devices.find(item => item.id === device.id)!.name = next; }); }}/><small><code>{device.name} MIDI In</code> · <code>{device.name} MIDI Out</code></small></div><label className="switch"><input type="checkbox" checked={device.enabled} onChange={event => void update(config => { config.virtual_devices.find(item => item.id === device.id)!.enabled = event.target.checked; })}/><span/></label><button className="danger-text" onClick={() => void update(config => { config.virtual_devices = config.virtual_devices.filter(item => item.id !== device.id); config.routes = config.routes.filter(route => !route.source.includes(device.id) && !route.target.includes(device.id)); config.known_endpoints = config.known_endpoints.filter(endpoint => !endpoint.id.includes(device.id)); })}>Entfernen</button></div>)}</div>
+    <div className="cards">{state.config.virtual_devices.map(device => <div className="device-block" key={device.id}><div className="device-card"><div className="device-icon">◫</div><div className="grow"><input className="name-input" defaultValue={device.name} onBlur={event => { const next = event.target.value.trim(); if (next && next !== device.name) void update(config => { config.virtual_devices.find(item => item.id === device.id)!.name = next; }); }}/><small><code>{device.name} MIDI In</code> · <code>{device.name} MIDI Out</code></small></div><label className="switch"><input type="checkbox" checked={device.enabled} onChange={event => void update(config => { config.virtual_devices.find(item => item.id === device.id)!.enabled = event.target.checked; })}/><span/></label><button className="danger-text" onClick={() => void update(config => { config.virtual_devices = config.virtual_devices.filter(item => item.id !== device.id); config.routes = config.routes.filter(route => !route.source.includes(device.id) && !route.target.includes(device.id)); config.known_endpoints = config.known_endpoints.filter(endpoint => !endpoint.id.includes(device.id)); })}>Entfernen</button></div><DeviceEffects device={device} update={update}/></div>)}</div>
   </section>;
+}
+
+function DeviceEffects({ device, update }: { device: VirtualDevice; update: ViewProps["update"] }) {
+  const change = (index: number, effect: MidiEffect) => void update(config => { config.virtual_devices.find(item => item.id === device.id)!.effects[index] = effect; });
+  const add = (type: "scale" | "sustain") => void update(config => config.virtual_devices.find(item => item.id === device.id)!.effects.push(type === "scale"
+    ? { type: "scale_helper", enabled: true, root: 0, scale: "major" }
+    : { type: "sustain_helper", enabled: true, mode: "both", min_sustain_notes: 2, release_time_ms: 45, dissonance: "both", auto_sustain: true }));
+  return <div className="effects"><div className="effects-title"><span>MIDI-Effektkette</span><div><button onClick={() => add("scale")}>+ Scale Helper</button><button onClick={() => add("sustain")}>+ Sustain Helper</button></div></div>
+    {device.effects.map((effect, index) => <div className="effect" key={index}><span className="handle">{index + 1}</span><label className="switch"><input type="checkbox" checked={effect.enabled} onChange={event => change(index, { ...effect, enabled: event.target.checked })}/><span/></label><EffectControls effect={effect} onChange={next => change(index, next)}/><button disabled={index === 0} onClick={() => void update(config => { const effects = config.virtual_devices.find(item => item.id === device.id)!.effects; [effects[index - 1], effects[index]] = [effects[index], effects[index - 1]]; })}>↑</button><button disabled={index === device.effects.length - 1} onClick={() => void update(config => { const effects = config.virtual_devices.find(item => item.id === device.id)!.effects; [effects[index + 1], effects[index]] = [effects[index], effects[index + 1]]; })}>↓</button><button onClick={() => void update(config => { config.virtual_devices.find(item => item.id === device.id)!.effects.splice(index, 1); })}>×</button></div>)}
+    {device.effects.length === 0 && <small className="no-effects">Keine Effekte geladen. Eingehende MIDI-Daten bleiben unverändert.</small>}
+  </div>;
+}
+
+function EffectControls({ effect, onChange }: { effect: MidiEffect; onChange: (effect: MidiEffect) => void }) {
+  if (effect.type === "scale_helper") return <div className="effect-controls"><b>Scale Helper</b><label>Grundton <select value={effect.root} onChange={event => onChange({ ...effect, root: Number(event.target.value) })}>{["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"].map((name, index) => <option value={index} key={name}>{name}</option>)}</select></label><label>Skala <select value={effect.scale} onChange={event => onChange({ ...effect, scale: event.target.value as typeof effect.scale })}><option value="major">Dur</option><option value="natural_minor">Natürlich Moll</option><option value="harmonic_minor">Harmonisch Moll</option><option value="melodic_minor">Melodisch Moll</option></select></label></div>;
+  return <div className="effect-controls"><b>Sustain Helper</b><label>Modus <select value={effect.mode} onChange={event => onChange({ ...effect, mode: event.target.value as typeof effect.mode })}><option value="chord_gesture">Akkordgeste</option><option value="dissonance">Dissonanz</option><option value="both">Beides</option></select></label><label>Pool <input type="number" min="1" max="6" value={effect.min_sustain_notes} onChange={event => onChange({ ...effect, min_sustain_notes: Math.max(1, Math.min(6, Number(event.target.value))) })}/></label><label>Pause ms <input type="number" min="5" max="250" value={effect.release_time_ms} onChange={event => onChange({ ...effect, release_time_ms: Math.max(5, Math.min(250, Number(event.target.value))) })}/></label><label>Dissonanz <select value={effect.dissonance} onChange={event => onChange({ ...effect, dissonance: event.target.value as typeof effect.dissonance })}><option value="off">Aus</option><option value="semitone">Halbton</option><option value="tritone">Tritonus</option><option value="both">Beides</option></select></label><label className="check"><input type="checkbox" checked={effect.auto_sustain} onChange={event => onChange({ ...effect, auto_sustain: event.target.checked })}/> Auto-Sustain</label></div>;
 }
 
 interface ViewProps { state: EngineSnapshot; update: (mutate: (config: Config) => void) => Promise<void> }
