@@ -58,7 +58,7 @@ fn set_windows_autostart(enabled: bool) -> Result<()> {
         RegOpenKeyExW(
             HKEY_CURRENT_USER,
             PCWSTR(key_path.as_ptr()),
-            0,
+            Some(0),
             KEY_SET_VALUE,
             &mut key,
         )
@@ -70,7 +70,7 @@ fn set_windows_autostart(enabled: bool) -> Result<()> {
             RegSetValueExW(
                 key,
                 PCWSTR(value_name.as_ptr()),
-                0,
+                Some(0),
                 REG_SZ,
                 Some(std::slice::from_raw_parts(
                     wide.as_ptr().cast(),
