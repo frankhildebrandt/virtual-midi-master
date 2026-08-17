@@ -12,6 +12,10 @@ Virtual MIDI Master is a Rust MIDI routing engine with a Tauri 2 configuration a
 
 MIDI 2.0 authoring, LFOs, sequence recording, a node editor, Windows 10 and public code-signing are intentionally outside this release.
 
+## Version 1.0.0
+
+Die erste öffentliche Version bringt die Basis einer unabhängigen MIDI-Routing-App für macOS und Windows: virtuelle MIDI-Ports, eine Many-to-many-Patchbay, Filter und Mappings, gerätebezogene Effekte, sichere lokale Konfiguration, Autostart und einen Live-Monitor. Die vollständige Funktionsübersicht steht im [Changelog](CHANGELOG.md).
+
 ## Develop
 
 Requirements: Rust 1.88+, Node 20+, npm, and the platform build tools.
