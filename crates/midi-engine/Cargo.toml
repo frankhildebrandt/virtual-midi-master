@@ -37,3 +37,6 @@ tempfile = "3.14"
 
 [target.'cfg(target_os = "macos")'.dev-dependencies]
 midir = "0.10"
+
+[target.'cfg(target_os = "windows")'.dev-dependencies]
+midir = { version = "0.10", features = ["winrt"] }

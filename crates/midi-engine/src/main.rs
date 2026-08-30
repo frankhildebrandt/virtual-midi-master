@@ -37,10 +37,11 @@ fn main() -> Result<()> {
     }
     let backend = create_system_backend(8192)?;
     let controller = EngineController::start(backend, store, config.clone())?;
-    if config.autostart && std::env::var_os("VMM_DISABLE_AUTOSTART").is_none() {
-        if let Err(error) = set_autostart(true) {
-            tracing::warn!(%error, "could not register autostart");
-        }
+    if config.autostart
+        && std::env::var_os("VMM_DISABLE_AUTOSTART").is_none()
+        && let Err(error) = set_autostart(true)
+    {
+        tracing::warn!(%error, "could not register autostart");
     }
     tracing::info!(endpoint = %virtual_midi_engine::ipc_endpoint().display(), "engine ready");
     serve(controller)

@@ -1,7 +1,11 @@
+#[cfg(unix)]
 use std::fs::{File, OpenOptions};
+#[cfg(unix)]
 use std::io;
 
-use anyhow::{Context, Result, anyhow};
+#[cfg(unix)]
+use anyhow::Context;
+use anyhow::{Result, anyhow};
 
 pub struct SingleInstanceGuard {
     #[cfg(unix)]

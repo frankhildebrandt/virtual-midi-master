@@ -8,7 +8,9 @@ use crossbeam_channel::{Receiver, Sender, bounded, select, tick};
 use parking_lot::RwLock;
 use serde::{Deserialize, Serialize};
 use virtual_midi_core::{Config, EndpointRef, MidiEvent, Router};
-use virtual_midi_platform::{EndpointInfo, MidiBackend, PlatformStatus};
+use virtual_midi_platform::{
+    EndpointInfo, MidiBackend, PlatformStatus, configured_virtual_endpoints,
+};
 
 use crate::{ConfigStore, set_autostart};
 
@@ -63,22 +65,37 @@ impl EngineController {
         mut initial_config: Config,
     ) -> Result<Self> {
         let router = Router::compile(&initial_config).context("compile initial routing")?;
-        let endpoints = backend
-            .reconfigure(&initial_config)
-            .context("configure MIDI platform")?;
+        let mut last_error = None;
+        let endpoints = match backend.reconfigure(&initial_config) {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                last_error = Some(error.to_string());
+                backend.endpoints()
+            }
+        };
         remember_endpoints(&mut initial_config, &endpoints);
         store.save(&initial_config)?;
         let platform = backend.status();
+        if last_error.is_none() && !platform.runtime_available {
+            last_error = Some(platform.detail.clone());
+        }
+        let mut logs = vec!["Engine gestartet".into()];
+        if let Some(error) = &last_error {
+            logs.push(format!("Fehler: {error}"));
+        }
         let snapshot = Arc::new(RwLock::new(EngineSnapshot {
             revision: 1,
             running: true,
             config: initial_config.clone(),
-            endpoints: include_offline_endpoints(endpoints, &initial_config.known_endpoints),
+            endpoints: include_configured_virtuals(
+                include_offline_endpoints(endpoints, &initial_config.known_endpoints),
+                &initial_config,
+            ),
             platform,
             stats: EngineStats::default(),
             monitor: Vec::new(),
-            logs: vec!["Engine gestartet".into()],
-            last_error: None,
+            logs,
+            last_error,
         }));
         let (commands, receiver) = bounded(16);
         let worker_snapshot = snapshot.clone();
@@ -154,7 +171,10 @@ fn run_worker(
                             config = committed.clone();
                             let mut current = snapshot.write();
                             current.config = committed.clone();
-                            current.endpoints = include_offline_endpoints(endpoints, &committed.known_endpoints);
+                            current.endpoints = include_configured_virtuals(
+                                include_offline_endpoints(endpoints, &committed.known_endpoints),
+                                &committed,
+                            );
                             current.platform = backend.status();
                             current.last_error = None;
                             current.revision += 1;
@@ -185,7 +205,10 @@ fn run_worker(
                             }
                             let mut current = snapshot.write();
                             current.config = config.clone();
-                            current.endpoints = include_offline_endpoints(endpoints, &config.known_endpoints);
+                            current.endpoints = include_configured_virtuals(
+                                include_offline_endpoints(endpoints, &config.known_endpoints),
+                                &config,
+                            );
                             current.revision += 1;
                             append_log(&mut current, "MIDI-Endpunkte aktualisiert".into());
                         }
@@ -306,13 +329,13 @@ fn apply_transaction(
             return Err(error).context("prepare MIDI endpoints");
         }
     };
-    if next.autostart != previous.autostart {
-        if let Err(error) = set_autostart(next.autostart) {
-            backend
-                .reconfigure(previous)
-                .context("autostart failed and restoring previous MIDI endpoints also failed")?;
-            return Err(error).context("update autostart registration");
-        }
+    if next.autostart != previous.autostart
+        && let Err(error) = set_autostart(next.autostart)
+    {
+        backend
+            .reconfigure(previous)
+            .context("autostart failed and restoring previous MIDI endpoints also failed")?;
+        return Err(error).context("update autostart registration");
     }
     let mut committed = next.clone();
     remember_endpoints(&mut committed, &endpoints);
@@ -356,6 +379,16 @@ fn remember_endpoints(config: &mut Config, endpoints: &[EndpointInfo]) {
             config.known_endpoints.push(reference);
         }
     }
+}
+
+fn include_configured_virtuals(mut live: Vec<EndpointInfo>, config: &Config) -> Vec<EndpointInfo> {
+    for endpoint in configured_virtual_endpoints(&config.virtual_devices, false) {
+        if live.iter().any(|current| current.id == endpoint.id) {
+            continue;
+        }
+        live.push(endpoint);
+    }
+    live
 }
 
 fn include_offline_endpoints(

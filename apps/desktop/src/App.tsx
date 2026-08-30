@@ -79,6 +79,7 @@ export default function App() {
       <header><div><h1>{pages.find(([id]) => id === page)?.[1]}</h1><p>MIDI-Routing ohne Umwege.</p></div><span className="pill">MIDI 1.0</span></header>
       {error && <div className="alert"><strong>Fehler</strong><span>{error}</span><button onClick={() => setError(null)}>×</button></div>}
       {!state ? <div className="empty">Engine wird gestartet …</div> : <>
+        {state.last_error && <div className="alert"><strong>MIDI-Fehler</strong><span>{state.last_error}</span></div>}
         {page === "dashboard" && <Dashboard state={state}/>}
         {page === "devices" && <Devices state={state}/>}
         {page === "virtual" && <VirtualDevices state={state} update={update}/>}
@@ -99,7 +100,7 @@ function Dashboard({ state }: { state: EngineSnapshot }) {
       <Stat label="Routing-Latenz" value={`${state.stats.last_internal_latency_micros} µs`}/>
     </section>
     <section className="panel"><PanelTitle title="Engine und Runtime" subtitle="Aktueller Zustand der Hintergrundkomponente"/>
-      <dl className="details"><dt>Plattform</dt><dd>{state.platform.platform}</dd><dt>Runtime</dt><dd className={state.platform.runtime_available ? "good" : "bad"}>{state.platform.runtime_available ? "Verfügbar" : "Fehlt"}</dd><dt>Details</dt><dd>{state.platform.detail}</dd><dt>Sendefehler</dt><dd>{state.stats.send_errors}</dd></dl>
+      <dl className="details"><dt>Plattform</dt><dd>{state.platform.platform}</dd><dt>Runtime</dt><dd className={state.platform.runtime_available ? "good" : "bad"}>{state.platform.runtime_available ? "Verfügbar" : "Fehlt"}</dd><dt>Details</dt><dd>{state.platform.detail}</dd><dt>Letzter Fehler</dt><dd className={state.last_error ? "bad" : "good"}>{state.last_error ?? "Keiner"}</dd><dt>Sendefehler</dt><dd>{state.stats.send_errors}</dd></dl>
     </section>
     <Monitor state={state}/>
   </div>;
@@ -171,7 +172,7 @@ function RuleControls({ rule, onChange }: { rule: TransformRule; onChange: (rule
 function Settings({ state, update }: ViewProps) {
   return <div className="stack"><section className="panel"><PanelTitle title="Hintergrundbetrieb" subtitle="Die Engine hält virtuelle Ports auch ohne geöffnetes Fenster bereit"/><div className="setting"><div><strong>Nach Anmeldung starten</strong><small>Registriert die Engine im Benutzerkontext, ohne Administratorrechte.</small></div><label className="switch"><input type="checkbox" checked={state.config.autostart} onChange={event => void update(config => { config.autostart = event.target.checked; })}/><span/></label></div></section>
     <section className="panel"><PanelTitle title="Engine-Log" subtitle="Die letzten Status- und Fehlermeldungen"/><div className="log-list">{state.logs.slice().reverse().map((entry, index) => <code key={index}>{entry}</code>)}</div></section>
-    <section className="panel"><PanelTitle title="Diagnose" subtitle="Informationen für Fehlersuche und Support"/><pre>{JSON.stringify({ platform: state.platform, stats: state.stats, endpoints: state.endpoints.length, configVersion: state.config.version }, null, 2)}</pre></section>
+    <section className="panel"><PanelTitle title="Diagnose" subtitle="Informationen für Fehlersuche und Support"/><pre>{JSON.stringify({ platform: state.platform, lastError: state.last_error, stats: state.stats, endpoints: state.endpoints.length, configVersion: state.config.version }, null, 2)}</pre></section>
   </div>;
 }
 

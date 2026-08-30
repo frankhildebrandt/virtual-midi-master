@@ -2,16 +2,21 @@ use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
+use std::time::Duration;
 
 use crossbeam_channel::{Receiver, Sender, bounded};
 use midir::{Ignore, MidiInput, MidiInputConnection, MidiOutput, MidiOutputConnection};
 use virtual_midi_core::{Config, EndpointDirection, EndpointId, EndpointKind, MidiEvent};
 
-use crate::{EndpointInfo, MidiBackend, PlatformError, PlatformStatus};
+use crate::{
+    EndpointInfo, MidiBackend, PlatformError, PlatformStatus, configured_virtual_endpoints,
+};
 
 type MidiCallback = unsafe extern "C" fn(*const c_char, *const u8, usize, u64, *mut c_void);
 
 unsafe extern "C" {
+    fn vmm_windows_midi_last_error() -> *const c_char;
     fn vmm_windows_midi_runtime_available() -> i32;
     fn vmm_windows_midi_initialize() -> i32;
     fn vmm_windows_midi_create_virtual_device(
@@ -24,6 +29,40 @@ unsafe extern "C" {
     fn vmm_windows_midi_send(stable_id: *const c_char, data: *const u8, length: usize) -> i32;
 }
 
+fn last_bridge_error() -> String {
+    let pointer = unsafe { vmm_windows_midi_last_error() };
+    if pointer.is_null() {
+        return "Windows MIDI Services reported an unknown error".into();
+    }
+    unsafe { CStr::from_ptr(pointer) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+fn port_name_matches_virtual_device(port_name: &str, device_name: &str) -> bool {
+    if port_name == device_name
+        || port_name == format!("{device_name} MIDI In")
+        || port_name == format!("{device_name} MIDI Out")
+    {
+        return true;
+    }
+    [
+        format!("{device_name} ("),
+        format!("{device_name} ["),
+        format!("{device_name} -"),
+    ]
+    .iter()
+    .any(|prefix| port_name.starts_with(prefix.as_str()))
+}
+
+fn is_own_virtual_port(config: &Config, port_name: &str) -> bool {
+    config
+        .virtual_devices
+        .iter()
+        .filter(|device| device.enabled)
+        .any(|device| port_name_matches_virtual_device(port_name, &device.name))
+}
+
 struct CallbackContext {
     sender: Sender<MidiEvent>,
     queue_overflows: Arc<AtomicU64>,
@@ -32,6 +71,8 @@ struct CallbackContext {
 pub struct WindowsBackend {
     incoming_tx: Sender<MidiEvent>,
     incoming_rx: Receiver<MidiEvent>,
+    // Boxed so C++ keeps a stable callback context pointer across Vec growth.
+    #[allow(clippy::vec_box)]
     contexts: Vec<Box<CallbackContext>>,
     input_connections: Vec<MidiInputConnection<()>>,
     outputs: HashMap<EndpointId, MidiOutputConnection>,
@@ -70,9 +111,7 @@ unsafe extern "C" fn receive_virtual_midi(
 impl WindowsBackend {
     pub fn new(capacity: usize) -> Result<Self, PlatformError> {
         if unsafe { vmm_windows_midi_initialize() } == 0 {
-            return Err(PlatformError::RuntimeUnavailable(
-                "Windows MIDI Services oder das versionierte App SDK ist nicht verfügbar. Setze VMM_WINDOWS_MIDI_SDK_INCLUDE beim Build auf die C++/WinRT-Includes des SDK.".into(),
-            ));
+            return Err(PlatformError::RuntimeUnavailable(last_bridge_error()));
         }
         let (incoming_tx, incoming_rx) = bounded(capacity);
         Ok(Self {
@@ -88,13 +127,14 @@ impl WindowsBackend {
         })
     }
 
-    fn system_signature(&self) -> Result<Vec<(u8, String)>, PlatformError> {
+    fn system_signature(&self, config: &Config) -> Result<Vec<(u8, String)>, PlatformError> {
         let input = MidiInput::new("Virtual MIDI Master hotplug discovery")
             .map_err(|error| PlatformError::Initialization(error.to_string()))?;
         let mut signature = input
             .ports()
             .iter()
             .filter_map(|port| input.port_name(port).ok().map(|name| (port.id(), name)))
+            .filter(|(_, name)| !is_own_virtual_port(config, name))
             .map(|(id, name)| (0, format!("physical:input:{id}|{name}")))
             .collect::<Vec<_>>();
         let output = MidiOutput::new("Virtual MIDI Master hotplug discovery")
@@ -104,6 +144,7 @@ impl WindowsBackend {
                 .ports()
                 .iter()
                 .filter_map(|port| output.port_name(port).ok().map(|name| (port.id(), name)))
+                .filter(|(_, name)| !is_own_virtual_port(config, name))
                 .map(|(id, name)| (1, format!("physical:output:{id}|{name}"))),
         );
         signature.sort();
@@ -126,37 +167,6 @@ impl WindowsBackend {
         signature
     }
 
-    fn rebuilt_signature_is_complete(
-        &self,
-        mut observed: Vec<(u8, String)>,
-        config: &Config,
-    ) -> bool {
-        for connected in self.connected_physical_signature() {
-            let Some(index) = observed
-                .iter()
-                .position(|candidate| candidate == &connected)
-            else {
-                return false;
-            };
-            observed.swap_remove(index);
-        }
-        let pair_count = config
-            .virtual_devices
-            .iter()
-            .filter(|device| device.enabled)
-            .count();
-        observed
-            .iter()
-            .filter(|(direction, _)| *direction == 0)
-            .count()
-            == pair_count
-            && observed
-                .iter()
-                .filter(|(direction, _)| *direction == 1)
-                .count()
-                == pair_count
-    }
-
     fn upsert_endpoint(&mut self, endpoint: EndpointInfo) {
         if let Some(existing) = self
             .endpoints
@@ -169,7 +179,11 @@ impl WindowsBackend {
         }
     }
 
-    fn connect_physical(&mut self, offline_only: bool) -> Result<(), PlatformError> {
+    fn connect_physical(
+        &mut self,
+        config: &Config,
+        offline_only: bool,
+    ) -> Result<(), PlatformError> {
         let input_probe = MidiInput::new("Virtual MIDI Master discovery")
             .map_err(|error| PlatformError::Initialization(error.to_string()))?;
         let input_names = input_probe
@@ -181,6 +195,7 @@ impl WindowsBackend {
                     .ok()
                     .map(|name| (port.id(), name))
             })
+            .filter(|(_, name)| !is_own_virtual_port(config, name))
             .collect::<Vec<_>>();
         for (port_id, name) in input_names {
             let mut input = MidiInput::new("Virtual MIDI Master input")
@@ -244,6 +259,7 @@ impl WindowsBackend {
                     .ok()
                     .map(|name| (port.id(), name))
             })
+            .filter(|(_, name)| !is_own_virtual_port(config, name))
             .collect::<Vec<_>>();
         for (port_id, name) in output_names {
             let output = MidiOutput::new("Virtual MIDI Master output")
@@ -302,25 +318,16 @@ impl WindowsBackend {
             } == 0
             {
                 return Err(PlatformError::Endpoint(format!(
-                    "Windows virtual device '{}' could not be created",
-                    device.name
+                    "Windows virtual device '{}' could not be created: {}",
+                    device.name,
+                    last_bridge_error()
                 )));
             }
             self.contexts.push(context);
-            self.endpoints.push(EndpointInfo {
-                id: EndpointId::new(format!("virtual:{stable_id}:in")),
-                name: format!("{} MIDI In", device.name),
-                direction: EndpointDirection::Source,
-                kind: EndpointKind::Virtual,
-                online: true,
-            });
-            self.endpoints.push(EndpointInfo {
-                id: EndpointId::new(format!("virtual:{stable_id}:out")),
-                name: format!("{} MIDI Out", device.name),
-                direction: EndpointDirection::Target,
-                kind: EndpointKind::Virtual,
-                online: true,
-            });
+            self.endpoints.extend(configured_virtual_endpoints(
+                std::slice::from_ref(device),
+                true,
+            ));
         }
         Ok(())
     }
@@ -332,8 +339,9 @@ impl WindowsBackend {
         self.outputs.clear();
         self.endpoints.clear();
         self.active_system_signature.clear();
-        let expected_physical_signature = self.system_signature()?;
-        self.connect_physical(false)?;
+        thread::sleep(Duration::from_millis(50));
+        let expected_physical_signature = self.system_signature(config)?;
+        self.connect_physical(config, false)?;
         if self.connected_physical_signature() != expected_physical_signature {
             return Err(PlatformError::Endpoint(
                 "MIDI topology changed while physical ports were connected; retrying".into(),
@@ -341,22 +349,19 @@ impl WindowsBackend {
         }
         self.create_virtual(config)?;
         self.config = config.clone();
-        let active_system_signature = self.system_signature()?;
-        if !self.rebuilt_signature_is_complete(active_system_signature.clone(), config) {
-            return Err(PlatformError::Endpoint(
-                "MIDI topology changed while virtual ports were created; retrying".into(),
-            ));
-        }
-        self.active_system_signature = active_system_signature;
+        self.active_system_signature = self.system_signature(config)?;
         Ok(self.endpoints.clone())
     }
 
     fn rebuild(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
         let mut last_error = None;
-        for _ in 0..3 {
+        for attempt in 0..3 {
             match self.rebuild_once(config) {
                 Ok(endpoints) => return Ok(endpoints),
-                Err(error) => last_error = Some(error),
+                Err(error) => {
+                    last_error = Some(error);
+                    thread::sleep(Duration::from_millis(100 * (attempt + 1)));
+                }
             }
         }
         Err(last_error.expect("the rebuild loop always runs at least once"))
@@ -374,7 +379,7 @@ impl MidiBackend for WindowsBackend {
         if !self.endpoints.is_empty()
             && !self.active_system_signature.is_empty()
             && self.config.virtual_devices == config.virtual_devices
-            && self.system_signature()? == self.active_system_signature
+            && self.system_signature(config)? == self.active_system_signature
         {
             self.config = config.clone();
             return Ok(self.endpoints.clone());
@@ -383,14 +388,15 @@ impl MidiBackend for WindowsBackend {
     }
 
     fn refresh(&mut self) -> Result<Option<Vec<EndpointInfo>>, PlatformError> {
-        if self.system_signature()? == self.active_system_signature {
+        let config = self.config.clone();
+        if self.system_signature(&config)? == self.active_system_signature {
             let offline_before = self
                 .endpoints
                 .iter()
                 .filter(|endpoint| !endpoint.online)
                 .count();
             if offline_before > 0 {
-                self.connect_physical(true)?;
+                self.connect_physical(&config, true)?;
                 let offline_after = self
                     .endpoints
                     .iter()
@@ -402,7 +408,6 @@ impl MidiBackend for WindowsBackend {
             }
             return Ok(None);
         }
-        let config = self.config.clone();
         self.rebuild(&config).map(Some)
     }
 
@@ -432,17 +437,22 @@ impl MidiBackend for WindowsBackend {
             if unsafe { vmm_windows_midi_send(id.as_ptr(), data.as_ptr(), data.len()) } != 0 {
                 return Ok(());
             }
+            return Err(PlatformError::Endpoint(last_bridge_error()));
         }
         Err(PlatformError::Endpoint(format!("offline target {target}")))
     }
 
     fn status(&self) -> PlatformStatus {
+        let available = unsafe { vmm_windows_midi_runtime_available() } != 0;
         PlatformStatus {
             platform: "windows-midi-services".into(),
-            runtime_available: unsafe { vmm_windows_midi_runtime_available() } != 0,
-            detail:
+            runtime_available: available,
+            detail: if available {
                 "Windows MIDI Services Virtual Device transport with MIDI 1.0 compatibility ports"
-                    .into(),
+                    .into()
+            } else {
+                last_bridge_error()
+            },
         }
     }
 }

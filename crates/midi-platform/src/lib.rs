@@ -7,9 +7,36 @@ mod windows;
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use virtual_midi_core::{Config, EndpointDirection, EndpointId, EndpointKind, MidiEvent};
+use virtual_midi_core::{
+    Config, EndpointDirection, EndpointId, EndpointKind, MidiEvent, VirtualDevice,
+};
 
 pub use memory::MemoryBackend;
+
+pub fn configured_virtual_endpoints(devices: &[VirtualDevice], online: bool) -> Vec<EndpointInfo> {
+    devices
+        .iter()
+        .filter(|device| device.enabled)
+        .flat_map(|device| {
+            [
+                EndpointInfo {
+                    id: EndpointId::new(format!("virtual:{}:in", device.id)),
+                    name: format!("{} MIDI In", device.name),
+                    direction: EndpointDirection::Source,
+                    kind: EndpointKind::Virtual,
+                    online,
+                },
+                EndpointInfo {
+                    id: EndpointId::new(format!("virtual:{}:out", device.id)),
+                    name: format!("{} MIDI Out", device.name),
+                    direction: EndpointDirection::Target,
+                    kind: EndpointKind::Virtual,
+                    online,
+                },
+            ]
+        })
+        .collect()
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointInfo {
@@ -75,6 +102,7 @@ pub fn create_system_backend(queue_capacity: usize) -> Result<Box<dyn MidiBacken
 #[cfg(target_os = "windows")]
 struct UnavailableBackend {
     status: PlatformStatus,
+    endpoints: Vec<EndpointInfo>,
 }
 
 #[cfg(target_os = "windows")]
@@ -86,18 +114,20 @@ impl UnavailableBackend {
                 runtime_available: false,
                 detail,
             },
+            endpoints: Vec::new(),
         }
     }
 }
 
 #[cfg(target_os = "windows")]
 impl MidiBackend for UnavailableBackend {
-    fn reconfigure(&mut self, _config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
-        Ok(Vec::new())
+    fn reconfigure(&mut self, config: &Config) -> Result<Vec<EndpointInfo>, PlatformError> {
+        self.endpoints = configured_virtual_endpoints(&config.virtual_devices, false);
+        Ok(self.endpoints.clone())
     }
 
     fn endpoints(&self) -> Vec<EndpointInfo> {
-        Vec::new()
+        self.endpoints.clone()
     }
 
     fn try_receive(&self) -> Option<MidiEvent> {

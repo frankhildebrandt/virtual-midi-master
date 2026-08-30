@@ -6,6 +6,7 @@
 extern "C" {
 #endif
 
+const char *vmm_windows_midi_last_error(void);
 int vmm_windows_midi_runtime_available(void);
 typedef void (*vmm_midi_callback)(const char *endpoint_id,
                                   const uint8_t *data,
